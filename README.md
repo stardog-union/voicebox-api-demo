@@ -5,7 +5,11 @@ endpoint (`POST /api/v1/voicebox/stream/ask`), with Stardog enhancements a plain
 LLM chat can't show: the SPARQL it ran, the grounded result table, and the
 source graphs.
 
-Built for enablement demos: it makes the streaming NDJSON response tangible.
+
+
+https://github.com/user-attachments/assets/35361667-65e3-487d-a432-63bc957bcd48
+
+
 
 ## What it shows
 
