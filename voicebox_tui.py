@@ -291,7 +291,7 @@ class VoiceboxTurn(Vertical):
         ):
             yield Static(classes="queries")
         with Collapsible(
-            title="Results", collapsed=False, classes="results-col detail hidden"
+            title="Results", collapsed=True, classes="results-col detail hidden"
         ):
             yield DataTable(classes="results")
         with Collapsible(
