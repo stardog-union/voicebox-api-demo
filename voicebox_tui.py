@@ -100,27 +100,28 @@ def reasoning_steps(snapshot: dict) -> list[dict]:
     return []
 
 
-def _first_line(text: str) -> str:
-    line = text.strip().splitlines()[0] if text.strip() else ""
-    return line[:139] + "…" if len(line) > 140 else line
-
-
 def render_reasoning(steps: list[dict]) -> str:
-    """Render the reasoning trace as one line per thought (outcomes omitted)."""
+    """Render the reasoning trace: one line per tool call, plus the agent's
+    narration in full. The widget word-wraps, so nothing is truncated."""
     lines: list[str] = []
     for step in steps:
         if step.get("tool"):
-            label = _first_line(
+            label = (
                 step.get("summary") or step.get("output_text_friendly") or ""
-            )
-            lines.append(f"[{STARDOG_GREEN}]▸[/] [dim]{escape(label)}[/]")
+            ).strip()
+            if label:
+                lines.append(f"[{STARDOG_GREEN}]▸[/] [dim]{escape(label)}[/]")
             continue
         text = (step.get("output_text") or "").strip()
-        if text.startswith("Data ID:") or text.lower().startswith("no data found"):
+        if (
+            not text
+            or text.startswith("Data ID:")
+            or text.lower().startswith("no data found")
+        ):
             continue
-        narration = _first_line(text)
-        if narration:
-            lines.append(f"  [italic]{escape(narration)}[/]")
+        # Keep the narration intact; indent every line to align under the step.
+        narration = "\n".join(f"  {escape(line)}" for line in text.splitlines())
+        lines.append(f"[italic]{narration}[/]")
     return "\n".join(lines)
 
 
@@ -132,11 +133,11 @@ def collect_sparql(snapshot: dict) -> list[str]:
     ]
 
 
-def unique_sparql(snapshot: dict) -> list[str]:
+def dedupe_sparql(queries: list[str]) -> list[str]:
     """SPARQL queries in run order, with exact duplicates removed."""
     seen: set[str] = set()
     out: list[str] = []
-    for q in collect_sparql(snapshot):
+    for q in queries:
         if q not in seen:
             seen.add(q)
             out.append(q)
@@ -230,9 +231,8 @@ def sources_view(sources: list[dict]) -> Table:
     return table
 
 
-def sparql_view(snapshot: dict):
+def sparql_view(queries: list[str]):
     """Rich renderable: each query in its own titled panel, last highlighted."""
-    queries = unique_sparql(snapshot)
     if not queries:
         return "[dim]No SPARQL was run for this answer.[/]"
 
@@ -320,7 +320,7 @@ class VoiceboxTurn(Vertical):
         self._stop_spin()
         self.query_one(".thinking", Static).update(f"[#e57373]✗ {escape(message)}[/]")
 
-    def finalize(self, snapshot: dict) -> None:
+    def finalize(self, snapshot: dict, queries: list[str]) -> None:
         self._stop_spin()
         self.query_one(".thinking", Static).display = False
         self.query_one(".answer", Markdown).update(
@@ -330,9 +330,8 @@ class VoiceboxTurn(Vertical):
         reasoning = self.query_one(".reasoning-col", Collapsible)
         reasoning.collapsed = True
 
-        queries = unique_sparql(snapshot)
         if queries:
-            self.query_one(".queries", Static).update(sparql_view(snapshot))
+            self.query_one(".queries", Static).update(sparql_view(queries))
             col = self.query_one(".queries-col", Collapsible)
             col.title = f"Queries Executed ({len(queries)})"
             col.remove_class("hidden")
@@ -454,6 +453,10 @@ class VoiceboxDemo(App):
     client_id: str = CLIENT_ID
     conversation_id: str | None = None
     turn_count: int = 0
+    # The stream reports a conversation-wide running total of SPARQL actions, so
+    # each turn's snapshot repeats earlier turns' queries. Track how many we've
+    # already attributed to prior turns; a turn shows only the entries past this.
+    _sparql_offset: int = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -551,6 +554,7 @@ class VoiceboxDemo(App):
     def action_new_conversation(self) -> None:
         self.conversation_id = None
         self.turn_count = 0
+        self._sparql_offset = 0
         self.query_one("#transcript", VerticalScroll).remove_children()
         self._update_conversation_label()
 
@@ -608,7 +612,13 @@ class VoiceboxDemo(App):
                             self._update_conversation_label()
                         turn.set_reasoning(reasoning_steps(snapshot))
                         if not snapshot.get("pending", True):
-                            turn.finalize(snapshot)
+                            # actions carry a conversation-wide running total of
+                            # SPARQL; this turn's queries are the ones past what
+                            # earlier turns already showed.
+                            all_sparql = collect_sparql(snapshot)
+                            queries = dedupe_sparql(all_sparql[self._sparql_offset :])
+                            self._sparql_offset = len(all_sparql)
+                            turn.finalize(snapshot, queries)
                         transcript.scroll_end(animate=False)
         except httpx.HTTPError as exc:
             turn.show_error(f"Request failed: {exc}")
